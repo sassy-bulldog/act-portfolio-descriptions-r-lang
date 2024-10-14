@@ -1,12 +1,591 @@
-# Function to print a personalized greeting
-print_greeting <- function(name) {
-  if (!is.null(name)) {
-    greeting <- paste("Hello,", name, "!")
-  } else {
-    greeting <- "Hello, World!"
+---
+title: "Portfolio & Capital Descriptions"
+# This should be the valuation date though Sys.time()
+date: "`r format(as.Date(params$date_of_valuation), '%B %e, %Y')`"
+editor_options:
+  chunk_output_type: console
+output: 
+  officedown::rdocx_document:
+    # toc: true
+    # number_sections: true
+    tables:
+      style: Table
+      layout: autofit
+      width: 1.0
+      caption:
+        style: Table Caption
+        pre: 'Table '
+        sep: ': '
+      conditional:
+        first_row: true
+        first_column: false
+        last_row: false
+        last_column: false
+        no_hband: false
+        no_vband: true
+    page_size:
+      width: 8
+      height: 11
+      orient: "portrait"
+    page_margins:
+      bottom: 1
+      top: 1
+      right: 1
+      left: 1
+      header: 0.5
+      footer: 0.5
+      gutter: 0.5 # What is gutter?
+params:
+  debug:
+    input: checkbox
+    label: Debug Mode
+    value: true
+  date_of_valuation:
+    input: date
+    label: Date of Valuation
+    value: "2024-09-30"
+  server_name: 
+    input: text
+    label: Server Name
+    value: ""
+  server_port: 
+    input: numeric
+    label: Port used to connect to server
+    value: 1433
+  user_name: 
+    input: text
+    label: User Name
+    value: ""
+  password:
+    input: text
+    label: Password
+    value: ""
+  database_name:
+    input: text
+    label: Database containing treaty positions in the portfolio
+    value: ""
+  schema_name:
+    input: text
+    label: Schema containing treaty positions in the portfolio
+    value: "dbo"
+  table_name:
+    input: text
+    label: Table containing treaty positions in the portfolio
+    value: ""
+  reporting_path:
+    input: text
+    label: Working directory for the monthly valuation process
+    value: ""
+---
+
+```{r, setup, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = params$debug)
+knitr::opts_knit$set(progress = TRUE, verbose = TRUE)
+
+# Check if libraries are installed and load them
+pacman::p_load(
+  DBI,
+  odbc,
+  dplyr,
+  scales,
+  readxl,
+  officer,
+  flextable
+)
+
+# prevent scientific notation for cross-platform compatibility
+options(scipen = 999)
+
+# As per our standards, we use environments for all local variables
+local_env <- new.env()
+
+# Document start time of code
+local_env$time_begin <- Sys.time()
+# local_env$subdirs <- list.dirs(path = params$reporting_path, full.names = TRUE, recursive = TRUE)
+```
+
+```{r, get_portfolio_treaties, echo=FALSE, include=FALSE}
+# Connect to treaty positions database
+
+# Create a connection string
+local_env$con <- dbConnect(odbc::odbc(),
+  Driver = "ODBC Driver 17 for SQL Server",
+  Server = params$server_name,
+  Port = params$server_port,
+  Database = params$database_name,
+  UID = params$user_name,
+  PWD = params$password,
+  Encrypt = "yes",
+  TrustServerCertificate = "yes",
+  Authentication = "SqlPassword"
+)
+
+# Query the table and store the result in local_env$treaty_positions
+local_env$query <- sprintf(
+  "SELECT * FROM %s.%s WHERE [EffectiveDate] IS NOT NULL AND 
+  COALESCE([TotalSubjectPremium], 0) > 0", 
+  params$schema_name, 
+  params$table_name
+)
+local_env$treaty_positions <- dbGetQuery(local_env$con, local_env$query)
+
+# Close the connection
+dbDisconnect(local_env$con)
+```
+
+## Table of Contents
+
+```{r, table_of_contents, echo=FALSE}
+block_toc()
+```
+
+## Risk Characteristics
+
+Historical (pre-bind) data can be found for each portfolio can be found in the folder (Inforce Reporting).
+
+Pre-bind actuarial review for each portfolio can be found in the folder (Underwriting).
+
+The contracts supporting each live Protected Cell Company (PCC) can be found in the data room folder dedicated to PCC documentation (Contracts and Documentation/PCC Documents).
+
+## Risk Concentration
+```{r, get_largest_exposures, echo=FALSE}
+# Determine the group by column "PrimaryLOB" with the largest sum of "TargetParticipation"
+local_env$total_target_participation <- local_env$treaty_positions %>%
+  summarise(TotalTargetParticipation = sum(TargetParticipation, na.rm = TRUE)) %>%
+  pull(TotalTargetParticipation)
+
+local_env$largest_lob <- local_env$treaty_positions %>%
+  group_by(PrimaryLOB) %>%
+  summarise(TotalTargetParticipation = sum(TargetParticipation, na.rm = TRUE)) %>%
+  arrange(desc(TotalTargetParticipation)) %>%
+  slice(1) %>%
+  mutate(
+    Percentage = TotalTargetParticipation / local_env$total_target_participation
+  )
+
+local_env$largest_carrier <- local_env$treaty_positions %>%
+  group_by(Carrier) %>%
+  summarise(TotalTargetParticipation = sum(TargetParticipation, na.rm = TRUE)) %>%
+  arrange(desc(TotalTargetParticipation)) %>%
+  slice(1) %>%
+  mutate(
+    Carrier = gsub("\\s*(\r?\n|\r)\\s*", " / ", Carrier) %>% gsub(" / / ", " / ", .),
+    Percentage = TotalTargetParticipation / local_env$total_target_participation
+  )
+```
+
+Our largest line of business by Gross Written Premium (GWP) is `r local_env$largest_lob$PrimaryLOB`,
+which is projected to comprise approximately `r percent(local_env$largest_lob$Percentage, accuracy=1)` of our book.
+
+Our largest counter party by GWP is `r local_env$largest_carrier$Carrier`,
+which is projected to comprise approximately `r percent(local_env$largest_carrier$Percentage, accuracy=1)` of our book.
+
+Both risk concentrations are projections, as each contract assumes a percentage of underwriting
+risk for a given portfolio, with a cap on how much premium the cell will support.
+Internally, we assume insurers will write 80% of their maximum authorization,
+but deviations in actual underwriting by insurer will affect our actual risk concentration.
+
+## Active Portfolios
+
+```{r, list_portfolios, echo=FALSE, results='asis'}
+
+local_env$distinct_names <- local_env$treaty_positions %>% 
+  distinct(Name) %>% 
+  arrange(Name) %>% 
+  pull(Name)
+
+# Loop through each distinct name
+for (name in local_env$distinct_names) {
+  # Add subheading for the name; make sure this is one deaper than section above
+  cat(sprintf("### %s\n", name)) 
+  
+  # Get distinct effective and expiration dates for the name
+  local_env$date_ranges <- local_env$treaty_positions %>% 
+    filter(Name == name) %>% 
+    distinct(EffectiveDate, ExpirationDate) %>% 
+    arrange(EffectiveDate)
+  
+  # Print the date ranges
+  local_env$sep <- "\n"
+  local_env$indent <- ""
+  if(nrow(local_env$date_ranges) > 1) {
+    local_env$sep <- "  \n"
+    local_env$indent <- "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;" # Why HTML???
   }
-  print(greeting)
+  cat("Effective Dates:", local_env$sep)
+  for (i in 1:nrow(local_env$date_ranges)) {
+    cat(
+      sprintf(
+        "%s%s - %s%s",
+        local_env$indent,
+        format(as.Date(local_env$date_ranges$EffectiveDate[i]), '%B %e, %Y'),
+        format(as.Date(local_env$date_ranges$ExpirationDate[i]), '%B %e, %Y'),
+        "  \n"
+      )
+    )
+  }
+
+  # Get the first attachment type for the name
+  # TODO: Can this ever vary by effective date?
+  local_env$attachment <- local_env$treaty_positions %>% 
+    filter(Name == name) %>% 
+    select(RAvLOD) %>% 
+    slice(1) %>% 
+    mutate(RAvLOD = ifelse(RAvLOD == "RA", 
+                 "Risk Attaching (Policy Issuance)", 
+                 "Losses Occurring During (Accident Date)")) %>%
+    pull(RAvLOD)
+  
+  # Print the narrative
+  cat("Attachment: ", sprintf("%s  \n", local_env$attachment))
+
+  # Get the first narrative for the name
+  local_env$narrative <- local_env$treaty_positions %>% 
+    filter(Name == name) %>% 
+    select(Narrative) %>% 
+    slice(1) %>% 
+    pull(Narrative)
+  
+  # Print the narrative
+  cat(sprintf("\n%s\n\n", local_env$narrative))
+}
+```
+
+## Reinsurance
+No reinsurance has been purchased by the PCCs to date, nor has any of the risk been retroceded, novated, or commuted.
+
+<!---BLOCK_LANDSCAPE_START--->
+
+## Capital Model
+```{r, find_capital_model, echo=FALSE, include=FALSE, results='hide'}
+# Convert Excel serial date to date format
+convert_excel_date <- function(excel_date) {
+  as.Date(excel_date, origin = "1899-12-30")
+}
+# function to easy get the 3-char month and year of a date
+format_date <- function(date) {
+  format(as.Date(date), "%b %Y")
 }
 
-# Call the function with a user name
-print_greeting("David")
+# Search for the file containing "Capital Call Model" in the specified directory
+local_env$capital_call_file <- list.files(
+  path = params$reporting_path,
+  pattern = "Capital Call Model.*\\.xlsx$",
+  recursive = FALSE,
+  full.names = TRUE
+)
+
+# Check if the file exists
+if (length(local_env$capital_call_file) > 0) {
+  # Read the "Summary by Program" worksheet from the found file
+  local_env$capital_model <- readxl::read_excel(
+    local_env$capital_call_file[1],
+    sheet = "Summary by Program",
+    col_names = TRUE,
+    skip = 3
+  )
+  
+  # Rename the first five columns
+  colnames(local_env$capital_model)[1:5] <- c("Carrier", "Program", "LineOfBusiness", "Bank", "DataColumns")
+  
+  # Rename columns where the numeric value is greater than 2019-12-31 in Excel date format
+  colnames(local_env$capital_model) <- sapply(colnames(local_env$capital_model), function(col) {
+    if (!is.na(as.numeric(col)) && as.numeric(col) > as.numeric(as.Date("2019-12-31") - as.Date("1899-12-30"))) {
+      as.character(convert_excel_date(as.numeric(col)))
+    } else {
+      col
+    }
+  })
+} else {
+  stop("Capital Call Model file not found in the specified directory.")
+}
+```
+
+The full capital model can be found in the data room here: `r fs::path_rel(local_env$capital_call_file[1], params$reporting_path)`
+
+### Capitalization To Date
+Historical Collateral Calls (Periodic, not cumulative)
+```{r, historic_capital_calls, echo=FALSE}
+# calculate the current year, next year, and previous year
+local_env$current_year <- format(as.Date(params$date_of_valuation), "%Y")
+local_env$previous_year <- as.numeric(local_env$current_year) - 1
+
+# Get the columns for the current year through the date of valuation
+local_env$current_year_columns <- colnames(local_env$capital_model)[
+  grepl(local_env$current_year, colnames(local_env$capital_model)) & 
+  sapply(colnames(local_env$capital_model), function(col) {
+    tryCatch({
+      as.Date(col) <= as.Date(params$date_of_valuation)
+    }, error = function(e) {
+      FALSE
+    })
+  })
+]
+
+# Get the column from the year end preceding params$date_of_valuation
+local_env$previous_year_column <- colnames(local_env$capital_model)[
+  grepl(local_env$previous_year, colnames(local_env$capital_model)) & 
+  sapply(colnames(local_env$capital_model), function(col) {
+    tryCatch({
+      as.Date(col) == as.Date(paste0(local_env$previous_year, "-12-31"))
+    }, error = function(e) {
+      FALSE
+    })
+  })
+]
+
+# Filter for periodic collateral calls in the current year
+local_env$historic_periodic_capital_calls <- local_env$capital_model %>%
+  filter(DataColumns == "Collateral Called [Periodic]") %>%
+  select(Program, all_of(local_env$current_year_columns)) %>%
+  mutate(
+    across(
+      all_of(local_env$current_year_columns),
+      \(x) scales::dollar(x, accuracy = 1,  style_negative = "parens")
+    )
+  )
+
+# Filter for cumulative collateral calls through the end of the previous year
+local_env$historic_cumulative_capital_calls <- local_env$capital_model %>%
+  filter(DataColumns == "Collateral Called [Cumulative]") %>%
+  select(Program, all_of(local_env$previous_year_column)) %>%
+  mutate(
+    across(
+      all_of(local_env$previous_year_column),
+      \(x) scales::dollar(x, accuracy = 1,  style_negative = "parens")
+    )
+  )
+
+# Join the two tables on Program
+local_env$historic_capital_calls <- local_env$historic_periodic_capital_calls %>%
+  left_join(local_env$historic_cumulative_capital_calls, by = "Program") %>%
+  select(Program, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
+  flextable::flextable()
+
+# Create a named list with each date formatted
+local_env$historic_capital_calls <- set_header_labels(
+  local_env$historic_capital_calls,
+  values = setNames(lapply(local_env$current_year_columns, format_date), local_env$current_year_columns)
+) %>% 
+  set_header_labels(
+    values = setNames(lapply(local_env$previous_year_column, function(col) {
+      paste("Through", format(as.Date(col), "%Y"))
+    }), local_env$previous_year_column)
+  )
+
+local_env$historic_capital_calls <- bold(local_env$historic_capital_calls, bold = TRUE, part = "header")
+local_env$historic_capital_calls <- fontsize(local_env$historic_capital_calls, size = 8, part = "all")
+local_env$historic_capital_calls <- font(local_env$historic_capital_calls, fontname = "Arial", part = "all")
+local_env$historic_capital_calls <- set_table_properties(local_env$historic_capital_calls, width = 1, layout = "autofit")
+local_env$historic_capital_calls <- bg(
+  local_env$historic_capital_calls,
+  i =  which(
+    tolower(local_env$historic_capital_calls$body$dataset$Program) %in% 
+    c("total bound", "projected")
+  ),
+  part = "body",
+  bg = "#f0f0f0"
+)
+local_env$historic_capital_calls <- bg(
+  local_env$historic_capital_calls,
+  i =  which(
+    tolower(local_env$historic_capital_calls$body$dataset$Program) %in% 
+    c("total")
+  ),
+  part = "body",
+  bg = "#e6e6e6"
+)
+
+# Knit the table into the document
+# knitr::kable(local_env$historic_capital_calls)
+local_env$historic_capital_calls
+```
+
+### Projected Future Capitalization Needs
+Anticipated Collateral Calls (Periodic, not cumulative)
+```{r, future_capital_calls, echo=FALSE}
+# Get the columns for the remaining months of the current year through November of the next year
+local_env$next_year <- as.numeric(local_env$current_year) + 1
+local_env$next_years_columns <- colnames(local_env$capital_model)[
+  sapply(colnames(local_env$capital_model), function(col) {
+    tryCatch({
+      as.Date(col) > as.Date(params$date_of_valuation) & 
+      as.Date(col) <= as.Date(paste0(local_env$next_year, "-12-31"))
+    }, error = function(e) {
+      FALSE
+    })
+  })
+]
+
+# Get the column from the year end of the next year
+local_env$next_year_end_column <- colnames(local_env$capital_model)[
+  sapply(colnames(local_env$capital_model), function(col) {
+    tryCatch({
+      as.Date(col) == as.Date(paste0(local_env$next_year, "-12-31"))
+    }, error = function(e) {
+      FALSE
+    })
+  })
+]
+
+# Filter for periodic collateral calls in prior to next calendar year end
+local_env$projected_periodic_capital_calls <- local_env$capital_model %>%
+  filter(DataColumns == "Collateral Called [Periodic]") %>%
+  select(Program, all_of(local_env$next_years_columns)) %>%
+  mutate(
+    across(
+      all_of(local_env$next_years_columns),
+      \(x) scales::dollar(x, accuracy = 1,  style_negative = "parens")
+    )
+  )
+
+# TODO: This may eventually be needed if we have more than one calendar year projected...
+# Filter for cumulative collateral calls through the end of the projection less cumulative through the end of next calendar year
+local_env$projected_cumulative_capital_calls <- local_env$capital_model %>%
+  filter(DataColumns == "Collateral Called [Cumulative]") %>%
+  select(Program, all_of(local_env$next_year_end_column)) %>%
+  mutate(
+    across(
+      all_of(local_env$next_year_end_column),
+      \(x) scales::dollar(x, accuracy = 1,  style_negative = "parens")
+    )
+  )
+
+local_env$projected_capital_calls <- local_env$projected_periodic_capital_calls %>%
+  flextable::flextable()
+
+local_env$projected_capital_calls <- set_header_labels(
+  local_env$projected_capital_calls,
+  values = setNames(lapply(local_env$next_years_columns, format_date), local_env$next_years_columns)
+)
+
+local_env$projected_capital_calls <- bold(local_env$projected_capital_calls, bold = TRUE, part = "header")
+local_env$projected_capital_calls <- fontsize(local_env$projected_capital_calls, size = 8, part = "all")
+local_env$projected_capital_calls <- font(local_env$projected_capital_calls, fontname = "Arial", part = "all")
+local_env$projected_capital_calls <- set_table_properties(local_env$projected_capital_calls, width = 1, layout = "autofit")
+local_env$projected_capital_calls <- bg(
+  local_env$projected_capital_calls,
+  i =  which(
+    tolower(local_env$projected_capital_calls$body$dataset$Program) %in% 
+    c("total bound", "projected")
+  ),
+  part = "body",
+  bg = "#f0f0f0"
+)
+local_env$projected_capital_calls <- bg(
+  local_env$projected_capital_calls,
+  i =  which(
+    tolower(local_env$projected_capital_calls$body$dataset$Program) %in% 
+    c("total")
+  ),
+  part = "body",
+  bg = "#e6e6e6"
+)
+
+# Knit the table into the document
+# knitr::kable(local_env$projected_periodic_capital_calls)
+local_env$projected_capital_calls
+run_pagebreak()
+```
+
+## Transaction Terms
+
+
+```{r, treaty_terms, echo=FALSE, results='asis'}
+local_env$terms <- local_env$treaty_positions %>% # 
+  rename(
+    "Line of Business" = "PrimaryLOB",
+    "Collateral Terms" = "CollateralTerms",
+  ) %>% rowwise() %>%
+  mutate(
+    "Program" = paste0(Name, "  \n(", format_date(EffectiveDate), ")"),
+    "Advantage / Differentiator" = Differentiator,  # gsub("\\s*(\r?\n|\r)\\s*", "<br>", Differentiator),
+    # "States" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", States),
+    # "Carrier" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", Carrier),
+    "Program Capacity" = scales::dollar(
+      TotalSubjectPremium,
+      accuracy = 1,
+      style_negative = "parens",
+      scale_cut = cut_short_scale()
+    ),
+    "Company Share" = scales::dollar(
+      TargetParticipation,
+      accuracy = 1,
+      style_negative = "parens",
+      scale_cut = cut_short_scale()
+    ),
+    # "Collateral Terms" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", CollateralTerms),
+    "Projected Loss Ratio" = scales::percent(PriorHalfImprovmentNetLALAERatio, accuracy = 1),
+    "Commission & Risk Share" = {
+      min_commission <- scales::percent(`MinimumCedingCommission`, accuracy = 2)
+      min_lr <- scales::percent(`MinimumCedingCommissionLLAERatio`, accuracy = 1)
+      prov_commission <- scales::percent(`ProvisionalCedingCommission`, accuracy = 2)
+      prov_lr <- scales::percent(`ProvisionalCedingCommissionLLAERatio`, accuracy = 1)
+      max_commission <- scales::percent(`MaximumCedingCommission`, accuracy = 2)
+      max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = 1)
+      # browser()
+      
+      if (min_commission == prov_commission && prov_commission == max_commission) {
+        paste(sprintf("Flat: %s", min_commission))
+      } else if (min_commission == prov_commission) {
+        paste(
+          sprintf("Min/Provisional: %s @ %s LR", min_commission, min_lr),
+          sprintf("Max: %s @ %s LR", max_commission, max_lr),
+          sep = "  \n"
+        )
+      } else if (prov_commission == max_commission) {
+        paste(
+          sprintf("Min: %s @ %s LR", min_commission, min_lr),
+          sprintf("Provisional/Max: %s @ %s LR", prov_commission, prov_lr),
+          sep = "  \n"
+        )
+      } else {
+        paste(
+          sprintf("Minimum: %s @ %s LR", min_commission, min_lr),
+          sprintf("Provisional: %s @ %s LR", prov_commission, prov_lr),
+          sprintf("Max: %s @ %s LR", max_commission, max_lr),
+          sep = "  \n"
+        )
+      }
+    },
+    "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = 1)
+  ) %>% ungroup() %>%
+  select(
+    Program,
+    "Line of Business",
+    "Advantage / Differentiator",
+    States,
+    Carrier,
+    "Program Capacity",
+    "Company Share",
+    "Collateral Terms",
+    "Projected Loss Ratio",
+    "Commission & Risk Share",
+    "Projected Combined Ratio (includes all expense)", "Commission & Risk Share"
+  ) %>%
+  flextable::flextable()
+  # mutate(
+  #   Program = kableExtra::linebreak(Program, align = "c"),
+  #   States = kableExtra::linebreak(States, align = "c"),
+  #   Carrier = kableExtra::linebreak(Carrier, align = "c"),
+  #   "Collateral Terms" = kableExtra::linebreak(`Collateral Terms`, align = "c"),
+  #   "Commission & Risk Share" = kableExtra::linebreak(`Commission & Risk Share`, align = "c")
+  # ) %>%
+  
+# local_env$terms <- fontsize(local_env$terms, size = 12, part = "header")
+local_env$terms <- bold(local_env$terms, bold = TRUE, part = "header")
+local_env$terms <- fontsize(local_env$terms, size = 8, part = "all")
+local_env$terms <- font(local_env$terms, fontname = "Arial", part = "all")
+local_env$terms <- set_table_properties(local_env$terms, width = 1, layout = "autofit")
+local_env$terms <- bg(
+  local_env$terms,
+  i = seq(1, nrow(local_env$terms$body$dataset), by = 2),
+  part = "body",
+  bg = "#f0f0f0"
+)
+
+# knitr::kable(escape = FALSE, format = "markdown")
+local_env$terms
+# without the stopping the landscape block, everything remains portrait
+```
+<!---BLOCK_LANDSCAPE_STOP--->
