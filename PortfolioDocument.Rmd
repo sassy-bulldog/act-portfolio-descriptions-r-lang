@@ -504,7 +504,8 @@ run_pagebreak()
 
 
 ```{r, treaty_terms, echo=FALSE, results='asis'}
-local_env$terms <- local_env$treaty_positions %>% #
+local_env$terms <- local_env$treaty_positions %>%
+  arrange(Name, EffectiveDate) %>% # sort by Name and EffectiveDate
   rename(
     "Line of Business" = "PrimaryLOB",
     "Collateral Terms" = "CollateralTerms",
