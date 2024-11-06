@@ -288,6 +288,15 @@ if (length(local_env$capital_call_file) > 0) {
   # Rename the first five columns
   colnames(local_env$capital_model)[1:5] <- c("Carrier", "Program", "LineOfBusiness", "Bank", "DataColumns")
 
+  # Determine the first unnamed column index
+  local_env$first_unnamed_column_index <- which(startsWith(colnames(local_env$capital_model), "..."))[1]
+
+  # Remove the unnamed columns and any work done to the right of the data
+  local_env$capital_model <- local_env$capital_model[, -c(local_env$first_unnamed_column_index:ncol(local_env$capital_model))]
+
+  # Remove the ...# piece at the end of any remaining columns
+  colnames(local_env$capital_model) <- gsub("\\.\\.\\.[0-9]+$", "", colnames(local_env$capital_model))
+
   # Rename columns where the numeric value is greater than 2019-12-31 in Excel date format
   colnames(local_env$capital_model) <- sapply(colnames(local_env$capital_model), function(col) {
     if (!is.na(as.numeric(col)) && as.numeric(col) > as.numeric(as.Date("2019-12-31") - as.Date("1899-12-30"))) {
