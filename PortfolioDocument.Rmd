@@ -343,29 +343,31 @@ local_env$previous_year_column <- colnames(local_env$capital_model)[
 # Filter for periodic collateral calls in the current year
 local_env$historic_periodic_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Periodic]") %>%
-  select(Program, all_of(local_env$current_year_columns)) %>%
-  mutate(
-    across(
-      all_of(local_env$current_year_columns),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$current_year_columns))
 
 # Filter for cumulative collateral calls through the end of the previous year
 local_env$historic_cumulative_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Cumulative]") %>%
-  select(Program, all_of(local_env$previous_year_column)) %>%
-  mutate(
-    across(
-      all_of(local_env$previous_year_column),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$previous_year_column))
 
-# Join the two tables on Program
+# Join the two tables on Program and add a total column
 local_env$historic_capital_calls <- local_env$historic_periodic_capital_calls %>%
   left_join(local_env$historic_cumulative_capital_calls, by = "Program") %>%
   select(Program, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
+  mutate(
+    Total = rowSums(
+      across(
+        c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)),
+        ~ as.numeric(gsub("[^0-9.-]", "", .))
+      )
+    ),
+    across(
+      c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns), Total),
+      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
+    ),
+  ) %>%
   flextable::flextable()
 
 # Create a named list with each date formatted
@@ -443,27 +445,29 @@ local_env$next_year_end_column <- colnames(local_env$capital_model)[
 # Filter for periodic collateral calls in prior to next calendar year end
 local_env$projected_periodic_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Periodic]") %>%
-  select(Program, all_of(local_env$next_years_columns)) %>%
-  mutate(
-    across(
-      all_of(local_env$next_years_columns),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$next_years_columns))
 
 # TODO: This may eventually be needed if we have more than one calendar year projected...
 # Filter for cumulative collateral calls through the end of the projection less cumulative through the end of next calendar year
 local_env$projected_cumulative_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Cumulative]") %>%
-  select(Program, all_of(local_env$next_year_end_column)) %>%
-  mutate(
-    across(
-      all_of(local_env$next_year_end_column),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$next_year_end_column))
 
 local_env$projected_capital_calls <- local_env$projected_periodic_capital_calls %>%
+  mutate(
+    Total = rowSums(
+      across(
+        all_of(c(local_env$next_years_columns)),
+        ~ as.numeric(gsub("[^0-9.-]", "", .))
+      )
+    ),
+    across(
+      c(all_of(local_env$next_years_columns), Total),
+      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
+    ),
+  ) %>%
   flextable::flextable()
 
 local_env$projected_capital_calls <- set_header_labels(
