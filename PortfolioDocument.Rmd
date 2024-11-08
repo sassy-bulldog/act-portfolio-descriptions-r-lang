@@ -175,10 +175,10 @@ local_env$largest_carrier <- local_env$treaty_positions %>%
 ```
 
 Our largest line of business by Gross Written Premium (GWP) is `r local_env$largest_lob$PrimaryLOB`,
-which is projected to comprise approximately `r percent(local_env$largest_lob$Percentage, accuracy=1)` of our book.
+which is projected to comprise approximately `r percent(local_env$largest_lob$Percentage, accuracy=.01)` of our book.
 
 Our largest counter party by GWP is `r local_env$largest_carrier$Carrier`,
-which is projected to comprise approximately `r percent(local_env$largest_carrier$Percentage, accuracy=1)` of our book.
+which is projected to comprise approximately `r percent(local_env$largest_carrier$Percentage, accuracy=.01)` of our book.
 
 Both risk concentrations are projections, as each contract assumes a percentage of underwriting
 risk for a given portfolio, with a cap on how much premium the cell will support.
@@ -542,14 +542,14 @@ local_env$terms <- local_env$treaty_positions %>%
       scale_cut = cut_short_scale()
     ),
     # "Collateral Terms" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", CollateralTerms),
-    "Projected Loss Ratio" = scales::percent(PriorHalfImprovmentNetLALAERatio, accuracy = 1),
+    "Projected Loss Ratio" = scales::percent(PriorHalfImprovmentNetLALAERatio, accuracy = .01),
     "Commission & Risk Share" = {
-      min_commission <- scales::percent(`MinimumCedingCommission`, accuracy = 2)
-      min_lr <- scales::percent(`MinimumCedingCommissionLLAERatio`, accuracy = 1)
-      prov_commission <- scales::percent(`ProvisionalCedingCommission`, accuracy = 2)
-      prov_lr <- scales::percent(`ProvisionalCedingCommissionLLAERatio`, accuracy = 1)
-      max_commission <- scales::percent(`MaximumCedingCommission`, accuracy = 2)
-      max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = 1)
+      min_commission <- scales::percent(`MinimumCedingCommission`, accuracy = .01)
+      min_lr <- scales::percent(`MinimumCedingCommissionLLAERatio`, accuracy = .01)
+      prov_commission <- scales::percent(`ProvisionalCedingCommission`, accuracy = .01)
+      prov_lr <- scales::percent(`ProvisionalCedingCommissionLLAERatio`, accuracy = .01)
+      max_commission <- scales::percent(`MaximumCedingCommission`, accuracy = .01)
+      max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = .01)
       # browser()
 
       if (min_commission == prov_commission && prov_commission == max_commission) {
@@ -575,7 +575,7 @@ local_env$terms <- local_env$treaty_positions %>%
         )
       }
     },
-    "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = 1)
+    "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = .01)
   ) %>%
   ungroup() %>%
   select(
