@@ -552,28 +552,77 @@ local_env$terms <- local_env$treaty_positions %>%
       max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = .01)
       # browser()
 
-      if (min_commission == prov_commission && prov_commission == max_commission) {
-        paste(sprintf("Flat: %s", min_commission))
-      } else if (min_commission == prov_commission) {
-        paste(
-          sprintf("Min/Provisional: %s @ %s LR", min_commission, min_lr),
-          sprintf("Max: %s @ %s LR", max_commission, max_lr),
+      do.call(
+        paste,
+        c(
+          as.list(
+            if (min_commission == prov_commission && prov_commission == max_commission) {
+              c(sprintf("Flat: %s", min_commission))
+            } else if (min_commission == prov_commission) {
+              c(
+                sprintf("Min/Provisional: %s @ %s LR", min_commission, min_lr),
+                sprintf("Max: %s @ %s LR", max_commission, max_lr),
+                sprintf(
+                  "Scale of %s:1",
+                  (
+                    MaximumCedingCommission - MinimumCedingCommission
+                  ) / (
+                    MaximumCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
+                  )
+                ),
+              )
+            } else if (prov_commission == max_commission) {
+              c(
+                sprintf("Min: %s @ %s LR", min_commission, min_lr),
+                sprintf("Provisional/Max: %s @ %s LR", ProvisionalCedingCommission, prov_lr),
+                sprintf(
+                  "Scale of %s:1",
+                  (
+                    MaximumCedingCommission - MinimumCedingCommission
+                  ) / (
+                    MaximumCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
+                  )
+                ),
+              )
+            } else {
+              c(
+                sprintf(
+                  "Minimum: %s @ %s LR",
+                  min_commission,
+                  min_lr
+                ),
+                sprintf(
+                  "Provisional: %s @ %s LR",
+                  prov_commission,
+                  prov_lr
+                ),
+                sprintf(
+                  "Scale of %s:1",
+                  (
+                    ProvisionalCedingCommission - MinimumCedingCommission
+                  ) / (
+                    ProvisionalCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
+                  )
+                ),
+                sprintf(
+                  "Max: %s @ %s LR",
+                  max_commission,
+                  max_lr
+                ),
+                sprintf(
+                  "Scale of %s:1",
+                  (
+                    MaximumCedingCommission - ProvisionalCedingCommission
+                  ) / (
+                    MaximumCedingCommissionLLAERatio - ProvisionalCedingCommissionLLAERatio
+                  )
+                ),
+              )
+            }
+          ),
           sep = "  \n"
         )
-      } else if (prov_commission == max_commission) {
-        paste(
-          sprintf("Min: %s @ %s LR", min_commission, min_lr),
-          sprintf("Provisional/Max: %s @ %s LR", prov_commission, prov_lr),
-          sep = "  \n"
-        )
-      } else {
-        paste(
-          sprintf("Minimum: %s @ %s LR", min_commission, min_lr),
-          sprintf("Provisional: %s @ %s LR", prov_commission, prov_lr),
-          sprintf("Max: %s @ %s LR", max_commission, max_lr),
-          sep = "  \n"
-        )
-      }
+      )
     },
     "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = .01)
   ) %>%
