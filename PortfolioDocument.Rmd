@@ -43,7 +43,19 @@ params:
   date_of_valuation:
     input: date
     label: Date of Valuation
-    value: "2024-09-30"
+    value: "2024-12-31"
+  treaty_csv:
+    input: checkbox
+    label: Read Treaty Positions from CSV instead of Provider DB
+    value: false
+  treaty_positions:
+    input: text
+    label: "Treaty Positions CSV file"
+    value: "Treaties.csv"
+  underwriting_lalaes:
+    input: text
+    label: "Underwriting LALAE CSV file"
+    value: "UnderwritingLALAEs.csv"
   server_name:
     input: text
     label: Server Name
@@ -121,16 +133,63 @@ local_env$con <- dbConnect(odbc::odbc(),
 )
 
 # Query the table and store the result in local_env$treaty_positions
-local_env$query <- sprintf(
-  "SELECT * FROM %s.%s WHERE [EffectiveDate] IS NOT NULL AND
-  COALESCE([TotalSubjectPremium], 0) > 0",
-  params$schema_name,
-  params$table_name
-)
-local_env$treaty_positions <- dbGetQuery(local_env$con, local_env$query)
+local_env$query <- paste(readLines("TreatyTable.sql"), collapse = "\n")
+local_env$treaty_positions <- DBI::dbGetQuery(local_env$con, local_env$query) %>%
+    filter(EffectiveDate <= params$date_of_valuation) %>%
+    rename(
+      KEY = ConcatenatedKey,
+    )
 
 # Close the connection
-dbDisconnect(local_env$con)
+DBI::dbDisconnect(local_env$con)
+
+
+local_env$underwriting_lalaes <- read.csv(
+  paste(params$reporting_path, params$underwriting_lalaes, sep = ""),
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    KEY,
+    Duration.Estimated,
+    LALAE.NoImprovement.Gross,
+    LALAE.HalfImprovement.Gross,
+    LALAE.Market.Gross,
+    LALAE.Industry.Gross,
+    LALAE.NoImprovement.NetCorridorsAndCaps,
+    LALAE.HalfImprovement.NetCorridorsAndCaps,
+    LALAE.Market.NetCorridorsAndCaps,
+    LALAE.Industry.NetCorridorsAndCaps,
+    CR.NoImprovement,
+    CR.HalfImprovement,
+    CR.Market,
+    CR.Industry,
+  )
+
+  # Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
+  if (any(!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY)) {
+    local_env$missing_keys <- unique(local_env$underwriting_lalaes$KEY[!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY])
+    warning(paste(
+      "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
+      paste(local_env$missing_keys, collapse = "\n")
+    ))
+  }
+
+  if (any(!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY)) {
+    local_env$missing_keys <- unique(local_env$treaty_positions$KEY[!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY])
+    stop(paste(
+      "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
+      paste(local_env$missing_keys, collapse = "\n")
+    ))
+  }
+
+  # Join the underwriting_lalaes table to the treaty_positions table
+  # These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
+  local_env$treaty_positions <- local_env$treaty_positions %>%
+    inner_join(
+      local_env$underwriting_lalaes,
+      by = c("KEY")
+    )
+
 ```
 
 ## Table of Contents
@@ -275,12 +334,13 @@ local_env$capital_call_file <- list.files(
   full.names = TRUE
 )
 
-# Check if the file exists
+# Check if the file exists https://readxl.tidyverse.org/reference/read_excel.html
 if (length(local_env$capital_call_file) > 0) {
   # Read the "Summary by Program" worksheet from the found file
   local_env$capital_model <- readxl::read_excel(
     local_env$capital_call_file[1],
     sheet = "Summary by Program",
+    # range = "B1:AP443",
     col_names = TRUE,
     skip = 3
   )
@@ -542,89 +602,8 @@ local_env$terms <- local_env$treaty_positions %>%
       scale_cut = cut_short_scale()
     ),
     # "Collateral Terms" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", CollateralTerms),
-    "Projected Loss Ratio" = scales::percent(PriorHalfImprovmentNetLALAERatio, accuracy = .01),
-    "Commission & Risk Share" = {
-      min_commission <- scales::percent(`MinimumCedingCommission`, accuracy = .01)
-      min_lr <- scales::percent(`MinimumCedingCommissionLLAERatio`, accuracy = .01)
-      prov_commission <- scales::percent(`ProvisionalCedingCommission`, accuracy = .01)
-      prov_lr <- scales::percent(`ProvisionalCedingCommissionLLAERatio`, accuracy = .01)
-      max_commission <- scales::percent(`MaximumCedingCommission`, accuracy = .01)
-      max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = .01)
-      # browser()
-
-      do.call(
-        paste,
-        c(
-          as.list(
-            if (min_commission == prov_commission && prov_commission == max_commission) {
-              c(sprintf("Flat: %s", min_commission))
-            } else if (min_commission == prov_commission) {
-              c(
-                sprintf("Min/Provisional: %s @ %s LR", min_commission, min_lr),
-                sprintf("Max: %s @ %s LR", max_commission, max_lr),
-                sprintf(
-                  "Scale of %s:1",
-                  (
-                    MaximumCedingCommission - MinimumCedingCommission
-                  ) / (
-                    MaximumCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
-                  )
-                ),
-              )
-            } else if (prov_commission == max_commission) {
-              c(
-                sprintf("Min: %s @ %s LR", min_commission, min_lr),
-                sprintf("Provisional/Max: %s @ %s LR", ProvisionalCedingCommission, prov_lr),
-                sprintf(
-                  "Scale of %s:1",
-                  (
-                    MaximumCedingCommission - MinimumCedingCommission
-                  ) / (
-                    MaximumCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
-                  )
-                ),
-              )
-            } else {
-              c(
-                sprintf(
-                  "Minimum: %s @ %s LR",
-                  min_commission,
-                  min_lr
-                ),
-                sprintf(
-                  "Provisional: %s @ %s LR",
-                  prov_commission,
-                  prov_lr
-                ),
-                sprintf(
-                  "Scale of %s:1",
-                  (
-                    ProvisionalCedingCommission - MinimumCedingCommission
-                  ) / (
-                    ProvisionalCedingCommissionLLAERatio - MinimumCedingCommissionLLAERatio
-                  )
-                ),
-                sprintf(
-                  "Max: %s @ %s LR",
-                  max_commission,
-                  max_lr
-                ),
-                sprintf(
-                  "Scale of %s:1",
-                  (
-                    MaximumCedingCommission - ProvisionalCedingCommission
-                  ) / (
-                    MaximumCedingCommissionLLAERatio - ProvisionalCedingCommissionLLAERatio
-                  )
-                ),
-              )
-            }
-          ),
-          sep = "  \n"
-        )
-      )
-    },
-    "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = .01)
+    "Projected Loss Ratio" = scales::percent(LALAE.HalfImprovement.NetCorridorsAndCaps, accuracy = .01),
+    "Projected Combined Ratio (includes all expense)" = scales::percent(CR.HalfImprovement, accuracy = .01)
   ) %>%
   ungroup() %>%
   select(
@@ -638,7 +617,7 @@ local_env$terms <- local_env$treaty_positions %>%
     "Collateral Terms",
     "Projected Loss Ratio",
     "Commission & Risk Share",
-    "Projected Combined Ratio (includes all expense)", "Commission & Risk Share"
+    "Projected Combined Ratio (includes all expense)"
   ) %>%
   flextable::flextable()
 # mutate(
@@ -662,7 +641,7 @@ local_env$terms <- bg(
 )
 
 # knitr::kable(escape = FALSE, format = "markdown")
-local_env$terms
+# local_env$terms
 # without the stopping the landscape block, everything remains portrait
 ```
 <!---BLOCK_LANDSCAPE_STOP--->
