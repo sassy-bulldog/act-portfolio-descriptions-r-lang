@@ -135,10 +135,10 @@ local_env$con <- dbConnect(odbc::odbc(),
 # Query the table and store the result in local_env$treaty_positions
 local_env$query <- paste(readLines("TreatyTable.sql"), collapse = "\n")
 local_env$treaty_positions <- DBI::dbGetQuery(local_env$con, local_env$query) %>%
-    filter(EffectiveDate <= params$date_of_valuation) %>%
-    rename(
-      KEY = ConcatenatedKey,
-    )
+  filter(EffectiveDate <= params$date_of_valuation) %>%
+  rename(
+    KEY = ConcatenatedKey,
+  )
 
 # Close the connection
 DBI::dbDisconnect(local_env$con)
@@ -165,31 +165,30 @@ local_env$underwriting_lalaes <- read.csv(
     CR.Industry,
   )
 
-  # Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
-  if (any(!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY)) {
-    local_env$missing_keys <- unique(local_env$underwriting_lalaes$KEY[!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY])
-    warning(paste(
-      "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
-      paste(local_env$missing_keys, collapse = "\n")
-    ))
-  }
+# Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
+if (any(!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY)) {
+  local_env$missing_keys <- unique(local_env$underwriting_lalaes$KEY[!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY])
+  warning(paste(
+    "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
+    paste(local_env$missing_keys, collapse = "\n")
+  ))
+}
 
-  if (any(!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY)) {
-    local_env$missing_keys <- unique(local_env$treaty_positions$KEY[!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY])
-    stop(paste(
-      "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
-      paste(local_env$missing_keys, collapse = "\n")
-    ))
-  }
+if (any(!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY)) {
+  local_env$missing_keys <- unique(local_env$treaty_positions$KEY[!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY])
+  stop(paste(
+    "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
+    paste(local_env$missing_keys, collapse = "\n")
+  ))
+}
 
-  # Join the underwriting_lalaes table to the treaty_positions table
-  # These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
-  local_env$treaty_positions <- local_env$treaty_positions %>%
-    inner_join(
-      local_env$underwriting_lalaes,
-      by = c("KEY")
-    )
-
+# Join the underwriting_lalaes table to the treaty_positions table
+# These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
+local_env$treaty_positions <- local_env$treaty_positions %>%
+  inner_join(
+    local_env$underwriting_lalaes,
+    by = c("KEY")
+  )
 ```
 
 ## Table of Contents
