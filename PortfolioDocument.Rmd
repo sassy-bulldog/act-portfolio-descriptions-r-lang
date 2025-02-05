@@ -43,7 +43,19 @@ params:
   date_of_valuation:
     input: date
     label: Date of Valuation
-    value: "2024-09-30"
+    value: "2024-12-31"
+  treaty_csv:
+    input: checkbox
+    label: Read Treaty Positions from CSV instead of Provider DB
+    value: false
+  treaty_positions:
+    input: text
+    label: "Treaty Positions CSV file"
+    value: "Treaties.csv"
+  underwriting_lalaes:
+    input: text
+    label: "Underwriting LALAE CSV file"
+    value: "UnderwritingLALAEs.csv"
   server_name:
     input: text
     label: Server Name
@@ -121,16 +133,62 @@ local_env$con <- dbConnect(odbc::odbc(),
 )
 
 # Query the table and store the result in local_env$treaty_positions
-local_env$query <- sprintf(
-  "SELECT * FROM %s.%s WHERE [EffectiveDate] IS NOT NULL AND
-  COALESCE([TotalSubjectPremium], 0) > 0",
-  params$schema_name,
-  params$table_name
-)
-local_env$treaty_positions <- dbGetQuery(local_env$con, local_env$query)
+local_env$query <- paste(readLines("TreatyTable.sql"), collapse = "\n")
+local_env$treaty_positions <- DBI::dbGetQuery(local_env$con, local_env$query) %>%
+  filter(EffectiveDate <= params$date_of_valuation) %>%
+  rename(
+    KEY = ConcatenatedKey,
+  )
 
 # Close the connection
-dbDisconnect(local_env$con)
+DBI::dbDisconnect(local_env$con)
+
+
+local_env$underwriting_lalaes <- read.csv(
+  paste(params$reporting_path, params$underwriting_lalaes, sep = ""),
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    KEY,
+    Duration.Estimated,
+    LALAE.NoImprovement.Gross,
+    LALAE.HalfImprovement.Gross,
+    LALAE.Market.Gross,
+    LALAE.Industry.Gross,
+    LALAE.NoImprovement.NetCorridorsAndCaps,
+    LALAE.HalfImprovement.NetCorridorsAndCaps,
+    LALAE.Market.NetCorridorsAndCaps,
+    LALAE.Industry.NetCorridorsAndCaps,
+    CR.NoImprovement,
+    CR.HalfImprovement,
+    CR.Market,
+    CR.Industry,
+  )
+
+# Verify that all keys in the underwriting_lalaes table are present in the treaty_positions table
+if (any(!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY)) {
+  local_env$missing_keys <- unique(local_env$underwriting_lalaes$KEY[!local_env$underwriting_lalaes$KEY %in% local_env$treaty_positions$KEY])
+  warning(paste(
+    "The following keys in the underwriting_lalaes table are not present in the treaty_positions table:\n",
+    paste(local_env$missing_keys, collapse = "\n")
+  ))
+}
+
+if (any(!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY)) {
+  local_env$missing_keys <- unique(local_env$treaty_positions$KEY[!local_env$treaty_positions$KEY %in% local_env$underwriting_lalaes$KEY])
+  stop(paste(
+    "The following keys in the treaty_positions table are not present in the underwriting_lalaes table:\n",
+    paste(local_env$missing_keys, collapse = "\n")
+  ))
+}
+
+# Join the underwriting_lalaes table to the treaty_positions table
+# These are values that our underwriting team is responsible for, and may not be maintained or updated in vendor table in a timely fashion
+local_env$treaty_positions <- local_env$treaty_positions %>%
+  inner_join(
+    local_env$underwriting_lalaes,
+    by = c("KEY")
+  )
 ```
 
 ## Table of Contents
@@ -175,10 +233,10 @@ local_env$largest_carrier <- local_env$treaty_positions %>%
 ```
 
 Our largest line of business by Gross Written Premium (GWP) is `r local_env$largest_lob$PrimaryLOB`,
-which is projected to comprise approximately `r percent(local_env$largest_lob$Percentage, accuracy=1)` of our book.
+which is projected to comprise approximately `r percent(local_env$largest_lob$Percentage, accuracy=.01)` of our book.
 
 Our largest counter party by GWP is `r local_env$largest_carrier$Carrier`,
-which is projected to comprise approximately `r percent(local_env$largest_carrier$Percentage, accuracy=1)` of our book.
+which is projected to comprise approximately `r percent(local_env$largest_carrier$Percentage, accuracy=.01)` of our book.
 
 Both risk concentrations are projections, as each contract assumes a percentage of underwriting
 risk for a given portfolio, with a cap on how much premium the cell will support.
@@ -275,18 +333,28 @@ local_env$capital_call_file <- list.files(
   full.names = TRUE
 )
 
-# Check if the file exists
+# Check if the file exists https://readxl.tidyverse.org/reference/read_excel.html
 if (length(local_env$capital_call_file) > 0) {
   # Read the "Summary by Program" worksheet from the found file
   local_env$capital_model <- readxl::read_excel(
     local_env$capital_call_file[1],
     sheet = "Summary by Program",
+    # range = "B1:AP443",
     col_names = TRUE,
     skip = 3
   )
 
   # Rename the first five columns
   colnames(local_env$capital_model)[1:5] <- c("Carrier", "Program", "LineOfBusiness", "Bank", "DataColumns")
+
+  # Determine the first unnamed column index
+  local_env$first_unnamed_column_index <- which(startsWith(colnames(local_env$capital_model), "..."))[1]
+
+  # Remove the unnamed columns and any work done to the right of the data
+  local_env$capital_model <- local_env$capital_model[, -c(local_env$first_unnamed_column_index:ncol(local_env$capital_model))]
+
+  # Remove the ...# piece at the end of any remaining columns
+  colnames(local_env$capital_model) <- gsub("\\.\\.\\.[0-9]+$", "", colnames(local_env$capital_model))
 
   # Rename columns where the numeric value is greater than 2019-12-31 in Excel date format
   colnames(local_env$capital_model) <- sapply(colnames(local_env$capital_model), function(col) {
@@ -343,29 +411,31 @@ local_env$previous_year_column <- colnames(local_env$capital_model)[
 # Filter for periodic collateral calls in the current year
 local_env$historic_periodic_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Periodic]") %>%
-  select(Program, all_of(local_env$current_year_columns)) %>%
-  mutate(
-    across(
-      all_of(local_env$current_year_columns),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$current_year_columns))
 
 # Filter for cumulative collateral calls through the end of the previous year
 local_env$historic_cumulative_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Cumulative]") %>%
-  select(Program, all_of(local_env$previous_year_column)) %>%
-  mutate(
-    across(
-      all_of(local_env$previous_year_column),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$previous_year_column))
 
-# Join the two tables on Program
+# Join the two tables on Program and add a total column
 local_env$historic_capital_calls <- local_env$historic_periodic_capital_calls %>%
   left_join(local_env$historic_cumulative_capital_calls, by = "Program") %>%
   select(Program, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
+  mutate(
+    Total = rowSums(
+      across(
+        c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)),
+        ~ as.numeric(gsub("[^0-9.-]", "", .))
+      )
+    ),
+    across(
+      c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns), Total),
+      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
+    ),
+  ) %>%
   flextable::flextable()
 
 # Create a named list with each date formatted
@@ -443,27 +513,29 @@ local_env$next_year_end_column <- colnames(local_env$capital_model)[
 # Filter for periodic collateral calls in prior to next calendar year end
 local_env$projected_periodic_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Periodic]") %>%
-  select(Program, all_of(local_env$next_years_columns)) %>%
-  mutate(
-    across(
-      all_of(local_env$next_years_columns),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$next_years_columns))
 
 # TODO: This may eventually be needed if we have more than one calendar year projected...
 # Filter for cumulative collateral calls through the end of the projection less cumulative through the end of next calendar year
 local_env$projected_cumulative_capital_calls <- local_env$capital_model %>%
   filter(DataColumns == "Collateral Called [Cumulative]") %>%
-  select(Program, all_of(local_env$next_year_end_column)) %>%
-  mutate(
-    across(
-      all_of(local_env$next_year_end_column),
-      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-    )
-  )
+  filter(!Program %in% c("LOD", "Risk Attaching")) %>%
+  select(Program, all_of(local_env$next_year_end_column))
 
 local_env$projected_capital_calls <- local_env$projected_periodic_capital_calls %>%
+  mutate(
+    Total = rowSums(
+      across(
+        all_of(c(local_env$next_years_columns)),
+        ~ as.numeric(gsub("[^0-9.-]", "", .))
+      )
+    ),
+    across(
+      c(all_of(local_env$next_years_columns), Total),
+      \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
+    ),
+  ) %>%
   flextable::flextable()
 
 local_env$projected_capital_calls <- set_header_labels(
@@ -504,7 +576,8 @@ run_pagebreak()
 
 
 ```{r, treaty_terms, echo=FALSE, results='asis'}
-local_env$terms <- local_env$treaty_positions %>% #
+local_env$terms <- local_env$treaty_positions %>%
+  arrange(Name, EffectiveDate) %>% # sort by Name and EffectiveDate
   rename(
     "Line of Business" = "PrimaryLOB",
     "Collateral Terms" = "CollateralTerms",
@@ -528,40 +601,8 @@ local_env$terms <- local_env$treaty_positions %>% #
       scale_cut = cut_short_scale()
     ),
     # "Collateral Terms" = gsub("\\s*(\r?\n|\r)\\s*", "<br>", CollateralTerms),
-    "Projected Loss Ratio" = scales::percent(PriorHalfImprovmentNetLALAERatio, accuracy = 1),
-    "Commission & Risk Share" = {
-      min_commission <- scales::percent(`MinimumCedingCommission`, accuracy = 2)
-      min_lr <- scales::percent(`MinimumCedingCommissionLLAERatio`, accuracy = 1)
-      prov_commission <- scales::percent(`ProvisionalCedingCommission`, accuracy = 2)
-      prov_lr <- scales::percent(`ProvisionalCedingCommissionLLAERatio`, accuracy = 1)
-      max_commission <- scales::percent(`MaximumCedingCommission`, accuracy = 2)
-      max_lr <- scales::percent(`MaximumCedingCommissionLLAERatio`, accuracy = 1)
-      # browser()
-
-      if (min_commission == prov_commission && prov_commission == max_commission) {
-        paste(sprintf("Flat: %s", min_commission))
-      } else if (min_commission == prov_commission) {
-        paste(
-          sprintf("Min/Provisional: %s @ %s LR", min_commission, min_lr),
-          sprintf("Max: %s @ %s LR", max_commission, max_lr),
-          sep = "  \n"
-        )
-      } else if (prov_commission == max_commission) {
-        paste(
-          sprintf("Min: %s @ %s LR", min_commission, min_lr),
-          sprintf("Provisional/Max: %s @ %s LR", prov_commission, prov_lr),
-          sep = "  \n"
-        )
-      } else {
-        paste(
-          sprintf("Minimum: %s @ %s LR", min_commission, min_lr),
-          sprintf("Provisional: %s @ %s LR", prov_commission, prov_lr),
-          sprintf("Max: %s @ %s LR", max_commission, max_lr),
-          sep = "  \n"
-        )
-      }
-    },
-    "Projected Combined Ratio (includes all expense)" = scales::percent(PriorHalfImprovementCombinedRatio, accuracy = 1)
+    "Projected Loss Ratio" = scales::percent(LALAE.HalfImprovement.NetCorridorsAndCaps, accuracy = .01),
+    "Projected Combined Ratio (includes all expense)" = scales::percent(CR.HalfImprovement, accuracy = .01)
   ) %>%
   ungroup() %>%
   select(
@@ -575,7 +616,7 @@ local_env$terms <- local_env$treaty_positions %>% #
     "Collateral Terms",
     "Projected Loss Ratio",
     "Commission & Risk Share",
-    "Projected Combined Ratio (includes all expense)", "Commission & Risk Share"
+    "Projected Combined Ratio (includes all expense)"
   ) %>%
   flextable::flextable()
 # mutate(
@@ -599,7 +640,7 @@ local_env$terms <- bg(
 )
 
 # knitr::kable(escape = FALSE, format = "markdown")
-local_env$terms
+# local_env$terms
 # without the stopping the landscape block, everything remains portrait
 ```
 <!---BLOCK_LANDSCAPE_STOP--->
