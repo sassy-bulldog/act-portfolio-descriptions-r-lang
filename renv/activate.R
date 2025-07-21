@@ -120,7 +120,7 @@ local({
       return(FALSE)
 
     iderun <- Sys.getenv("R_CLI_HAS_HYPERLINK_IDE_RUN", unset = "false")
-    if (tolower(iderun) %in% "false")
+    if (tolower(iderun) == "false")
       return(FALSE)
 
     TRUE
