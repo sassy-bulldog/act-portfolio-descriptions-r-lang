@@ -1,5 +1,5 @@
 ---
-title: "Portfolio & Capital Descriptions"
+title: "`r params$doc_title`"
 date: "`r format(as.Date(params$date_of_valuation), '%B %e, %Y')`"
 editor_options:
   chunk_output_type: console
@@ -42,15 +42,31 @@ params:
   date_of_valuation:
     input: date
     label: Date of Valuation
-    value: "2025-03-31"
+    value: "2025-06-30"
   reporting_path:
     input: text
     label: Working directory for the monthly valuation process
-    value: Z:/Shared/Jaffa Main/Insurance/Reserving and Valuations/Reserving Process/2025 Q1
+    value: 
   inputs_workbook:
     input: text
     label: Workbook Containing All Inputs Required for this process
     value: Data for Valuation.xlsx
+  capital_workbook_pattern:
+    input: text
+    label: Pattern of the file naming convention for the workbook containing capital calls
+    value: "Capital Model_Portfolio.*\\.xls"
+  capital_worksheet_name:
+    input: text
+    label: Worksheet within the capital workbook containing capital calls
+    value: "Agg_Report"
+  capital_worksheet_range:
+    input: text
+    label: Range within the capital workbook worksheet containing capital calls
+    value: "B24:BC337"
+  doc_title:
+    input: text
+    label: Default title for the word document
+    value: Portfolio & Capital Descriptions
 ---
 
 ```{r, setup, echo=FALSE, include=FALSE}
@@ -231,7 +247,7 @@ format_date <- function(date) {
 # Search for the file containing "Capital Call Model" in the specified directory
 local_env$capital_call_file <- list.files(
   path = params$reporting_path,
-  pattern = "Capital Call Model.*\\.xlsx$",
+  pattern = params$capital_workbook_pattern,
   recursive = FALSE,
   full.names = TRUE
 )
@@ -243,10 +259,10 @@ if (length(local_env$capital_call_file) > 0) {
   # Read the "Summary by Program" worksheet from the found file
   local_env$capital_model <- readxl::read_excel(
     local_env$capital_call_file[1],
-    sheet = "Summary by Program",
-    # range = "B1:AP443",
-    col_names = TRUE,
-    skip = 3
+    sheet = params$capital_worksheet_name,
+    range = params$capital_worksheet_range,
+    col_names = TRUE
+    # skip = (params$capital_worksheet_firstrow - 1)
   )
 
   while (colnames(local_env$capital_model)[1] != "Carrier") {
@@ -254,13 +270,25 @@ if (length(local_env$capital_call_file) > 0) {
   }
 
   # Rename the first five columns
-  colnames(local_env$capital_model)[1:5] <- c("Carrier", "Program", "LineOfBusiness", "Bank", "DataColumns")
+  colnames(local_env$capital_model)[1:6] <- c(
+    "Carrier",
+    "Program",
+    "LineOfBusiness",
+    "Bank",
+    "Trust",
+    "Measurement"
+  )
 
   # Determine the first unnamed column index
   local_env$first_unnamed_column_index <- which(startsWith(colnames(local_env$capital_model), "..."))[1]
 
   # Remove the unnamed columns and any work done to the right of the data
-  local_env$capital_model <- local_env$capital_model[, -c(local_env$first_unnamed_column_index:ncol(local_env$capital_model))]
+  if(!is.na(local_env$first_unnamed_column_index)) {
+    local_env$capital_model <- local_env$capital_model[
+      ,
+      -c(local_env$first_unnamed_column_index:ncol(local_env$capital_model))
+    ]
+  }
 
   # Remove the ...# piece at the end of any remaining columns
   colnames(local_env$capital_model) <- gsub("\\.\\.\\.[0-9]+$", "", colnames(local_env$capital_model))
@@ -320,20 +348,22 @@ if (local_env$capital_call_file_missing == FALSE) {
 
   # Filter for periodic collateral calls in the current year
   local_env$historic_periodic_capital_calls <- local_env$capital_model %>%
-    filter(DataColumns == "Collateral Called [Periodic]") %>%
-    filter(!Program %in% c("LOD", "Risk Attaching")) %>%
-    select(Program, all_of(local_env$current_year_columns))
+    filter(Measurement == "Collateral Called [Periodic]") %>%
+    filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
+    select(Program, LineOfBusiness, all_of(local_env$current_year_columns)) %>%
+    mutate(across(all_of(local_env$current_year_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
   # Filter for cumulative collateral calls through the end of the previous year
   local_env$historic_cumulative_capital_calls <- local_env$capital_model %>%
-    filter(DataColumns == "Collateral Called [Cumulative]") %>%
-    filter(!Program %in% c("LOD", "Risk Attaching")) %>%
-    select(Program, all_of(local_env$previous_year_column))
+    filter(Measurement == "Collateral Called [Cumulative]") %>%
+    filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
+    select(Program, LineOfBusiness, all_of(local_env$previous_year_column)) %>%
+    mutate(across(all_of(local_env$previous_year_column), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
   # Join the two tables on Program and add a total column
   local_env$historic_capital_calls <- local_env$historic_periodic_capital_calls %>%
-    left_join(local_env$historic_cumulative_capital_calls, by = "Program") %>%
-    select(Program, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
+    left_join(local_env$historic_cumulative_capital_calls, by = c("Program", "LineOfBusiness")) %>%
+    select(Program, LineOfBusiness, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
     mutate(
       Total = rowSums(
         across(
@@ -426,16 +456,18 @@ if (local_env$capital_call_file_missing == FALSE) {
 
   # Filter for periodic collateral calls in prior to next calendar year end
   local_env$projected_periodic_capital_calls <- local_env$capital_model %>%
-    filter(DataColumns == "Collateral Called [Periodic]") %>%
-    filter(!Program %in% c("LOD", "Risk Attaching")) %>%
-    select(Program, all_of(local_env$next_years_columns))
+    filter(Measurement == "Collateral Called [Periodic]") %>%
+    filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
+    select(Program, LineOfBusiness, all_of(local_env$next_years_columns)) %>%
+    mutate(across(all_of(local_env$next_years_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
   # TODO: This may eventually be needed if we have more than one calendar year projected...
   # Filter for cumulative collateral calls through the end of the projection less cumulative through the end of next calendar year
   local_env$projected_cumulative_capital_calls <- local_env$capital_model %>%
-    filter(DataColumns == "Collateral Called [Cumulative]") %>%
-    filter(!Program %in% c("LOD", "Risk Attaching")) %>%
-    select(Program, all_of(local_env$next_year_end_column))
+    filter(Measurement == "Collateral Called [Cumulative]") %>%
+    filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
+    select(Program, LineOfBusiness, all_of(local_env$next_year_end_column)) %>%
+    mutate(across(all_of(local_env$next_year_end_column), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
   local_env$projected_capital_calls <- local_env$projected_periodic_capital_calls %>%
     mutate(
