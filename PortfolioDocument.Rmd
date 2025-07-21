@@ -46,7 +46,7 @@ params:
   reporting_path:
     input: text
     label: Working directory for the monthly valuation process
-    value: 
+    value:
   inputs_workbook:
     input: text
     label: Workbook Containing All Inputs Required for this process
@@ -283,7 +283,7 @@ if (length(local_env$capital_call_file) > 0) {
   local_env$first_unnamed_column_index <- which(startsWith(colnames(local_env$capital_model), "..."))[1]
 
   # Remove the unnamed columns and any work done to the right of the data
-  if(!is.na(local_env$first_unnamed_column_index)) {
+  if (!is.na(local_env$first_unnamed_column_index)) {
     local_env$capital_model <- local_env$capital_model[
       ,
       -c(local_env$first_unnamed_column_index:ncol(local_env$capital_model))
