@@ -323,7 +323,9 @@ if (local_env$capital_call_file_missing == FALSE) {
   # Helper function to get quarter from a date string
   get_quarter <- function(date_str) {
     d <- as.Date(date_str)
-    if (is.na(d)) return(NA)
+    if (is.na(d)) {
+      return(NA)
+    }
     q <- paste0("Q", ceiling(as.numeric(format(d, "%m")) / 3))
     paste0(q, " ", format(d, "%Y"))
   }
@@ -497,7 +499,9 @@ if (local_env$capital_call_file_missing == FALSE) {
   # Helper function to get quarter from a date string
   get_quarter <- function(date_str) {
     d <- as.Date(date_str)
-    if (is.na(d)) return(NA)
+    if (is.na(d)) {
+      return(NA)
+    }
     q <- paste0("Q", ceiling(as.numeric(format(d, "%m")) / 3))
     paste0(q, " ", format(d, "%Y"))
   }
