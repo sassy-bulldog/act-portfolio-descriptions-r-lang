@@ -43,6 +43,10 @@ params:
     input: date
     label: Date of Valuation
     value: "2025-06-30"
+  number_of_historical_years:
+    input: numerical
+    label: Number of historical years to show in the exhibits
+    value: 2
   reporting_path:
     input: text
     label: Working directory for the monthly valuation process
@@ -312,81 +316,132 @@ The full capital model can be found in the data room here: `r fs::path_rel(local
 Historical Collateral Calls (Periodic, not cumulative)
 ```{r, historic_capital_calls, echo=FALSE}
 if (local_env$capital_call_file_missing == FALSE) {
-  # calculate the current year, next year, and previous year
-  local_env$current_year <- format(as.Date(params$date_of_valuation), "%Y")
-  local_env$previous_year <- as.numeric(local_env$current_year) - 1
+  # calculate the current year and the cutoff year based on number_of_historical_years
+  local_env$current_year <- as.numeric(format(as.Date(params$date_of_valuation), "%Y"))
+  local_env$cutoff_year <- local_env$current_year - params$number_of_historical_years
 
-  # Get the columns for the current year through the date of valuation
-  local_env$current_year_columns <- colnames(local_env$capital_model)[
-    grepl(local_env$current_year, colnames(local_env$capital_model)) &
-      sapply(colnames(local_env$capital_model), function(col) {
-        tryCatch(
-          {
-            as.Date(col) <= as.Date(params$date_of_valuation)
-          },
-          error = function(e) {
-            FALSE
-          }
-        )
-      })
+  # Helper function to get quarter from a date string
+  get_quarter <- function(date_str) {
+    d <- as.Date(date_str)
+    if (is.na(d)) return(NA)
+    q <- paste0("Q", ceiling(as.numeric(format(d, "%m")) / 3))
+    paste0(q, " ", format(d, "%Y"))
+  }
+
+  # Get all columns that are dates between cutoff_year-01-01 and date_of_valuation (inclusive)
+  local_env$start_date <- as.Date(paste0(local_env$cutoff_year + 1, "-01-01"))
+  local_env$end_date <- as.Date(params$date_of_valuation)
+  local_env$period_columns <- colnames(local_env$capital_model)[
+    sapply(colnames(local_env$capital_model), function(col) {
+      tryCatch(
+        {
+          d <- as.Date(col)
+          !is.na(d) && d >= local_env$start_date && d <= local_env$end_date
+        },
+        error = function(e) {
+          FALSE
+        }
+      )
+    })
   ]
 
-  # Get the column from the year end preceding params$date_of_valuation
-  local_env$previous_year_column <- colnames(local_env$capital_model)[
-    grepl(local_env$previous_year, colnames(local_env$capital_model)) &
-      sapply(colnames(local_env$capital_model), function(col) {
-        tryCatch(
-          {
-            as.Date(col) == as.Date(paste0(local_env$previous_year, "-12-31"))
-          },
-          error = function(e) {
-            FALSE
-          }
-        )
-      })
-  ]
+  # Map each column to its quarter
+  local_env$period_quarters <- sapply(local_env$period_columns, get_quarter)
 
-  # Filter for periodic collateral calls in the current year
+  # Group columns by quarter
+  local_env$quarter_groups <- split(local_env$period_columns, local_env$period_quarters)
+
+  # Sort the quarters chronologically
+  quarter_order <- names(local_env$quarter_groups)
+  quarter_order <- quarter_order[!is.na(quarter_order)]
+  quarter_df <- data.frame(
+    quarter = as.integer(sub("Q([1-4]) .*", "\\1", quarter_order)),
+    year = as.integer(sub(".* ([0-9]{4})$", "\\1", quarter_order)),
+    name = quarter_order,
+    stringsAsFactors = FALSE
+  )
+  quarter_df <- quarter_df[order(quarter_df$year, quarter_df$quarter), ]
+  sorted_quarters <- quarter_df$name
+
+  # For each quarter, sum the columns in that quarter
   local_env$historic_periodic_capital_calls <- local_env$capital_model %>%
     filter(Measurement == "Collateral Called [Periodic]") %>%
     filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
-    select(Program, LineOfBusiness, all_of(local_env$current_year_columns)) %>%
-    mutate(across(all_of(local_env$current_year_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
+    select(Program, LineOfBusiness, all_of(local_env$period_columns)) %>%
+    mutate(across(all_of(local_env$period_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
-  # Filter for cumulative collateral calls through the end of the previous year
+  for (q in sorted_quarters) {
+    cols <- local_env$quarter_groups[[q]]
+    if (length(cols) > 0) {
+      local_env$historic_periodic_capital_calls[[q]] <- rowSums(local_env$historic_periodic_capital_calls[, cols, drop = FALSE], na.rm = TRUE)
+    }
+  }
+
+  # Keep only Program, LineOfBusiness, and the new quarterly columns (sorted)
+  local_env$historic_periodic_capital_calls <- local_env$historic_periodic_capital_calls %>%
+    select(Program, LineOfBusiness, all_of(sorted_quarters))
+
+  # Get all columns that are dates before or equal to the cutoff date
+  local_env$cutoff_date <- as.Date(paste0(local_env$cutoff_year, "-12-31"))
+  local_env$cutoff_columns <- colnames(local_env$capital_model)[
+    sapply(colnames(local_env$capital_model), function(col) {
+      tryCatch(
+        {
+          d <- as.Date(col)
+          !is.na(d) && d <= local_env$cutoff_date
+        },
+        error = function(e) {
+          FALSE
+        }
+      )
+    })
+  ]
+
+  # Filter for cumulative collateral calls through the cutoff year
   local_env$historic_cumulative_capital_calls <- local_env$capital_model %>%
     filter(Measurement == "Collateral Called [Cumulative]") %>%
     filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
-    select(Program, LineOfBusiness, all_of(local_env$previous_year_column)) %>%
-    mutate(across(all_of(local_env$previous_year_column), ~ as.numeric(gsub("[^0-9.-]", "", .))))
+    select(Program, LineOfBusiness, all_of(local_env$cutoff_columns)) %>%
+    mutate(across(all_of(local_env$cutoff_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
+
+  # Use the last available cumulative column before or equal to cutoff date
+  if (length(local_env$cutoff_columns) > 0) {
+    last_col <- tail(local_env$cutoff_columns, 1)
+    local_env$historic_cumulative_capital_calls$ThroughCutoff <- local_env$historic_cumulative_capital_calls[[last_col]]
+  } else {
+    local_env$historic_cumulative_capital_calls$ThroughCutoff <- NA
+  }
+
+  # Keep only Program, LineOfBusiness, and ThroughCutoff
+  local_env$historic_cumulative_capital_calls <- local_env$historic_cumulative_capital_calls %>%
+    select(Program, LineOfBusiness, ThroughCutoff)
 
   # Join the two tables on Program and add a total column
   local_env$historic_capital_calls <- local_env$historic_periodic_capital_calls %>%
     left_join(local_env$historic_cumulative_capital_calls, by = c("Program", "LineOfBusiness")) %>%
-    select(Program, LineOfBusiness, all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)) %>%
+    select(Program, LineOfBusiness, ThroughCutoff, all_of(sorted_quarters)) %>%
     mutate(
       Total = rowSums(
         across(
-          c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns)),
+          c(ThroughCutoff, all_of(sorted_quarters)),
           ~ as.numeric(gsub("[^0-9.-]", "", .))
-        )
+        ),
+        na.rm = TRUE
       ),
       across(
-        c(all_of(local_env$previous_year_column), all_of(local_env$current_year_columns), Total),
+        c(ThroughCutoff, all_of(sorted_quarters), Total),
         \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
       ),
     ) %>%
     flextable::flextable()
 
-  # Create a named list with each date formatted
+  # Set header labels for quarters and ThroughCutoff
   local_env$historic_capital_calls <- flextable::set_header_labels(
     local_env$historic_capital_calls,
-    values = setNames(lapply(local_env$current_year_columns, format_date), local_env$current_year_columns)
+    values = setNames(sorted_quarters, sorted_quarters)
   ) %>%
     flextable::set_header_labels(
-      values = setNames(lapply(local_env$previous_year_column, function(col) {
-        paste("Through", format(as.Date(col), "%Y"))
-      }), local_env$previous_year_column)
+      values = c(ThroughCutoff = paste0("Through ", local_env$cutoff_year))
     )
 
   local_env$historic_capital_calls <- flextable::bold(local_env$historic_capital_calls, bold = TRUE, part = "header")
@@ -413,7 +468,6 @@ if (local_env$capital_call_file_missing == FALSE) {
   )
 
   # Knit the table into the document
-  # knitr::kable(local_env$historic_capital_calls)
   local_env$historic_capital_calls
 } else {
   warning("Capital Call File Not Yet Available")
@@ -440,72 +494,86 @@ if (local_env$capital_call_file_missing == FALSE) {
     })
   ]
 
-  # Get the column from the year end of the next year
-  local_env$next_year_end_column <- colnames(local_env$capital_model)[
-    sapply(colnames(local_env$capital_model), function(col) {
-      tryCatch(
-        {
-          as.Date(col) == as.Date(paste0(local_env$next_year, "-12-31"))
-        },
-        error = function(e) {
-          FALSE
-        }
-      )
-    })
-  ]
+  # Helper function to get quarter from a date string
+  get_quarter <- function(date_str) {
+    d <- as.Date(date_str)
+    if (is.na(d)) return(NA)
+    q <- paste0("Q", ceiling(as.numeric(format(d, "%m")) / 3))
+    paste0(q, " ", format(d, "%Y"))
+  }
 
-  # Filter for periodic collateral calls in prior to next calendar year end
+  # Map each column to its quarter
+  local_env$next_years_quarters <- sapply(local_env$next_years_columns, get_quarter)
+
+  # Group columns by quarter
+  local_env$quarter_groups <- split(local_env$next_years_columns, local_env$next_years_quarters)
+
+  # Sort the quarters chronologically
+  quarter_order <- names(local_env$quarter_groups)
+  # Remove NA quarters if present
+  quarter_order <- quarter_order[!is.na(quarter_order)]
+  # Parse quarter and year for sorting
+  quarter_df <- data.frame(
+    quarter = as.integer(sub("Q([1-4]) .*", "\\1", quarter_order)),
+    year = as.integer(sub(".* ([0-9]{4})$", "\\1", quarter_order)),
+    name = quarter_order,
+    stringsAsFactors = FALSE
+  )
+  quarter_df <- quarter_df[order(quarter_df$year, quarter_df$quarter), ]
+  sorted_quarters <- quarter_df$name
+
+  # Collapse monthly columns into quarterly sums
   local_env$projected_periodic_capital_calls <- local_env$capital_model %>%
     filter(Measurement == "Collateral Called [Periodic]") %>%
     filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
     select(Program, LineOfBusiness, all_of(local_env$next_years_columns)) %>%
     mutate(across(all_of(local_env$next_years_columns), ~ as.numeric(gsub("[^0-9.-]", "", .))))
 
-  # TODO: This may eventually be needed if we have more than one calendar year projected...
-  # Filter for cumulative collateral calls through the end of the projection less cumulative through the end of next calendar year
-  local_env$projected_cumulative_capital_calls <- local_env$capital_model %>%
-    filter(Measurement == "Collateral Called [Cumulative]") %>%
-    filter(!Program %in% c("LOD", "Risk Attaching", "0")) %>%
-    select(Program, LineOfBusiness, all_of(local_env$next_year_end_column)) %>%
-    mutate(across(all_of(local_env$next_year_end_column), ~ as.numeric(gsub("[^0-9.-]", "", .))))
+  for (q in sorted_quarters) {
+    cols <- local_env$quarter_groups[[q]]
+    if (length(cols) > 0) {
+      local_env$projected_periodic_capital_calls[[q]] <- rowSums(local_env$projected_periodic_capital_calls[, cols, drop = FALSE], na.rm = TRUE)
+    }
+  }
 
-  local_env$projected_capital_calls <- local_env$projected_periodic_capital_calls %>%
+  # Keep only Program, LineOfBusiness, and the new quarterly columns (sorted)
+  local_env$projected_periodic_capital_calls <- local_env$projected_periodic_capital_calls %>%
+    select(Program, LineOfBusiness, all_of(sorted_quarters))
+
+  # Add a Total column
+  local_env$projected_periodic_capital_calls <- local_env$projected_periodic_capital_calls %>%
     mutate(
-      Total = rowSums(
-        across(
-          all_of(c(local_env$next_years_columns)),
-          ~ as.numeric(gsub("[^0-9.-]", "", .))
-        )
-      ),
+      Total = rowSums(across(all_of(sorted_quarters)), na.rm = TRUE),
       across(
-        c(all_of(local_env$next_years_columns), Total),
+        c(all_of(sorted_quarters), Total),
         \(x) scales::dollar(x, accuracy = 1, style_negative = "parens")
-      ),
+      )
     ) %>%
     flextable::flextable()
 
-  local_env$projected_capital_calls <- flextable::set_header_labels(
-    local_env$projected_capital_calls,
-    values = setNames(lapply(local_env$next_years_columns, format_date), local_env$next_years_columns)
+  # Set header labels for quarters
+  local_env$projected_periodic_capital_calls <- flextable::set_header_labels(
+    local_env$projected_periodic_capital_calls,
+    values = setNames(names(local_env$quarter_groups), names(local_env$quarter_groups))
   )
 
-  local_env$projected_capital_calls <- flextable::bold(local_env$projected_capital_calls, bold = TRUE, part = "header")
-  local_env$projected_capital_calls <- flextable::fontsize(local_env$projected_capital_calls, size = 8, part = "all")
-  local_env$projected_capital_calls <- flextable::font(local_env$projected_capital_calls, fontname = "Arial", part = "all")
-  local_env$projected_capital_calls <- flextable::set_table_properties(local_env$projected_capital_calls, width = 1, layout = "autofit")
-  local_env$projected_capital_calls <- flextable::bg(
-    local_env$projected_capital_calls,
+  local_env$projected_periodic_capital_calls <- flextable::bold(local_env$projected_periodic_capital_calls, bold = TRUE, part = "header")
+  local_env$projected_periodic_capital_calls <- flextable::fontsize(local_env$projected_periodic_capital_calls, size = 8, part = "all")
+  local_env$projected_periodic_capital_calls <- flextable::font(local_env$projected_periodic_capital_calls, fontname = "Arial", part = "all")
+  local_env$projected_periodic_capital_calls <- flextable::set_table_properties(local_env$projected_periodic_capital_calls, width = 1, layout = "autofit")
+  local_env$projected_periodic_capital_calls <- flextable::bg(
+    local_env$projected_periodic_capital_calls,
     i = which(
-      tolower(local_env$projected_capital_calls$body$dataset$Program) %in%
+      tolower(local_env$projected_periodic_capital_calls$body$dataset$Program) %in%
         c("total bound", "projected")
     ),
     part = "body",
     bg = "#f0f0f0"
   )
-  local_env$projected_capital_calls <- flextable::bg(
-    local_env$projected_capital_calls,
+  local_env$projected_periodic_capital_calls <- flextable::bg(
+    local_env$projected_periodic_capital_calls,
     i = which(
-      tolower(local_env$projected_capital_calls$body$dataset$Program) %in%
+      tolower(local_env$projected_periodic_capital_calls$body$dataset$Program) %in%
         c("total")
     ),
     part = "body",
@@ -513,8 +581,7 @@ if (local_env$capital_call_file_missing == FALSE) {
   )
 
   # Knit the table into the document
-  # knitr::kable(local_env$projected_periodic_capital_calls)
-  local_env$projected_capital_calls
+  local_env$projected_periodic_capital_calls
 } else {
   warning("Capital Call File Not Yet Available")
 }
