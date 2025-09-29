@@ -42,7 +42,7 @@ params:
   date_of_valuation:
     input: date
     label: Date of Valuation
-    value: "2025-06-30"
+    value: "2025-09-30"
   number_of_historical_years:
     input: numerical
     label: Number of historical years to show in the exhibits
@@ -50,7 +50,7 @@ params:
   reporting_path:
     input: text
     label: Working directory for the monthly valuation process
-    value:
+    value: !r getwd()
   inputs_workbook:
     input: text
     label: Workbook Containing All Inputs Required for this process
